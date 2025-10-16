@@ -1,196 +1,440 @@
 diff --git a/Makefile b/Makefile
-index 7c70c3b..433fa17 100644
+index 2721223..f88ec84 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -1,3 +1,4 @@
-+
- # To compile and run with a lab solution, set the lab name in lab.mk
- # (e.g., LB=util).  Run make grade to test solution with the lab's
- # grade script (e.g., grade-lab-util).
-@@ -157,8 +158,6 @@ UPROGS=\
- 	$U/_wc\
+@@ -164,6 +164,9 @@ UPROGS=\
  	$U/_zombie\
- 	$U/_sleep\
--	$U/_pingpong\
--	$U/_find\
+ 	$U/_waittest\
+ 	$U/_exittest\
++\
++	$U/_trace\
++	$U/_sysinfotest\
  
- ifeq ($(LAB),syscall)
- UPROGS += \
-diff --git a/user/find.c b/user/find.c
-deleted file mode 100644
-index 19b43b2..0000000
---- a/user/find.c
-+++ /dev/null
-@@ -1,92 +0,0 @@
--#include "kernel/types.h"
--#include "kernel/stat.h"
--#include "kernel/fs.h"
--#include "user/user.h"
--#include "kernel/fcntl.h"
--
--// find <path> <name>
--// 递归输出所有最终名称与 <name> 相同的文件或目录路径（含匹配的目录本身）。
--
--static char *fmtname(char *path) {
--  static char buf[DIRSIZ+1];
--  char *p;
--  for(p = path + strlen(path); p >= path && *p != '/'; p--) ;
--  p++;
--  int len = strlen(p);
--  if(len >= DIRSIZ) return p;
--  memmove(buf, p, len);
--  buf[len] = 0;
--  return buf;
--}
--
--static void find(char *path, char *target) {
--  int fd;
--  struct stat st;
--
--  if((fd = open(path, 0)) < 0)
--    return;
--  if(fstat(fd, &st) < 0){
--    close(fd);
--    return;
--  }
--
--  if(st.type == T_FILE){
--    if(strcmp(fmtname(path), target) == 0)
--      printf("%s\n", path);
--    close(fd);
--    return;
--  }
--
--  if(st.type != T_DIR){
--    close(fd);
--    return;
--  }
--
--  // 目录：枚举其子项。
--  char buf[512];
--  struct dirent de;
--  char *p;
--  int n = strlen(path);
--  if(n + 1 + DIRSIZ + 1 > sizeof(buf)){
--    close(fd);
--    return;
--  }
--  strcpy(buf, path);
--  p = buf + n;
--  if(n == 0 || buf[n-1] != '/') *p++ = '/';
--
--  while(read(fd, &de, sizeof(de)) == sizeof(de)){
--    if(de.inum == 0) continue;
--    if(strcmp(de.name, ".") == 0 || strcmp(de.name, "..") == 0) continue;
--
--    memmove(p, de.name, DIRSIZ); // 拷贝名字（含可能的 0 填充）
--    p[DIRSIZ] = 0;               // 保证结尾 0
--
--    // 去除填充后形成真实路径（memmove 已包含 0，fmtname 内部处理）
--    // 判断是否名称匹配（文件或目录都打印）
--    if(strcmp(fmtname(buf), target) == 0)
--      printf("%s\n", buf);
--
--    // 如果是目录则递归
--    int cfd = open(buf, 0);
--    if(cfd >= 0){
--      struct stat cst;
--      if(fstat(cfd, &cst) == 0 && cst.type == T_DIR){
--        close(cfd);
--        find(buf, target);
--      } else {
--        close(cfd);
--      }
--    }
--  }
--  close(fd);
--}
--
--int main(int argc, char *argv[]) {
--  if(argc != 3){
--    fprintf(2, "Usage: find <path> <name>\n");
--    exit(1);
--  }
--  find(argv[1], argv[2]);
--  exit(0);
--}
-diff --git a/user/pingpong.c b/user/pingpong.c
-deleted file mode 100644
-index 9b53257..0000000
---- a/user/pingpong.c
-+++ /dev/null
-@@ -1,74 +0,0 @@
--#include "kernel/types.h"
--#include "kernel/stat.h"
--#include "user/user.h"
--
--// pingpong 实现：
--// 父进程 -> 子进程 发送父进程 pid (int)
--// 子进程 打印 "<child>: received ping from pid <parent>"
--// 子进程 -> 父进程 回传子进程 pid (int)
--// 父进程 打印 "<parent>: received pong from pid <child>"
--// 不使用 wait()，仅依赖管道阻塞。
--
--static int read_full(int fd, void *buf, int n) {
--  int tot = 0; char *p = (char*)buf; int r;
--  while (tot < n && (r = read(fd, p + tot, n - tot)) > 0) tot += r;
--  return tot == n ? 0 : -1;
--}
--static int write_full(int fd, const void *buf, int n) {
--  int tot = 0; const char *p = (const char*)buf; int r;
--  while (tot < n && (r = write(fd, (void*)(p + tot), n - tot)) > 0) tot += r;
--  return tot == n ? 0 : -1;
--}
--
--int
--main(int argc, char *argv[])
--{
--  int p2c[2]; // parent -> child
--  int c2p[2]; // child  -> parent
--  if(pipe(p2c) < 0 || pipe(c2p) < 0){
--    fprintf(2, "pipe failed\n");
--    exit(1);
--  }
--
--  int parent_pid = getpid();
--  int child = fork();
--  if(child < 0){
--    fprintf(2, "fork failed\n");
--    exit(1);
--  }
--
--  if(child == 0){
--    // 子进程：读取父 pid，然后回复自己的 pid
--    close(p2c[1]);
--    close(c2p[0]);
--
--    int father_pid;
--    if(read_full(p2c[0], &father_pid, sizeof(father_pid)) < 0){
--      exit(1);
--    }
--    printf("%d: received ping from pid %d\n", getpid(), father_pid);
--
--    int self = getpid();
--    write_full(c2p[1], &self, sizeof(self));
--
--    close(p2c[0]);
--    close(c2p[1]);
--    exit(0);
--  } else {
--    // 父进程：发送自己的 pid，再等待子进程 pid 回来
--    close(p2c[0]);
--    close(c2p[1]);
--
--    write_full(p2c[1], &parent_pid, sizeof(parent_pid));
--
--    int child_pid;
--    if(read_full(c2p[0], &child_pid, sizeof(child_pid)) < 0){
--      exit(1);
--    }
--    printf("%d: received pong from pid %d\n", parent_pid, child_pid);
--
--    close(p2c[1]);
--    close(c2p[0]);
--    exit(0);
--  }
--}
+ 
+ ifeq ($(LAB),trap)
+diff --git a/commit.patch b/commit.patch
+new file mode 100644
+index 0000000..5e6afaa
+--- /dev/null
++++ b/commit.patch
+@@ -0,0 +1,196 @@
++diff --git a/Makefile b/Makefile
++index 7c70c3b..433fa17 100644
++--- a/Makefile
+++++ b/Makefile
++@@ -1,3 +1,4 @@
+++
++ # To compile and run with a lab solution, set the lab name in lab.mk
++ # (e.g., LB=util).  Run make grade to test solution with the lab's
++ # grade script (e.g., grade-lab-util).
++@@ -157,8 +158,6 @@ UPROGS=\
++ 	$U/_wc\
++ 	$U/_zombie\
++ 	$U/_sleep\
++-	$U/_pingpong\
++-	$U/_find\
++ 
++ ifeq ($(LAB),syscall)
++ UPROGS += \
++diff --git a/user/find.c b/user/find.c
++deleted file mode 100644
++index 19b43b2..0000000
++--- a/user/find.c
+++++ /dev/null
++@@ -1,92 +0,0 @@
++-#include "kernel/types.h"
++-#include "kernel/stat.h"
++-#include "kernel/fs.h"
++-#include "user/user.h"
++-#include "kernel/fcntl.h"
++-
++-// find <path> <name>
++-// 递归输出所有最终名称与 <name> 相同的文件或目录路径（含匹配的目录本身）。
++-
++-static char *fmtname(char *path) {
++-  static char buf[DIRSIZ+1];
++-  char *p;
++-  for(p = path + strlen(path); p >= path && *p != '/'; p--) ;
++-  p++;
++-  int len = strlen(p);
++-  if(len >= DIRSIZ) return p;
++-  memmove(buf, p, len);
++-  buf[len] = 0;
++-  return buf;
++-}
++-
++-static void find(char *path, char *target) {
++-  int fd;
++-  struct stat st;
++-
++-  if((fd = open(path, 0)) < 0)
++-    return;
++-  if(fstat(fd, &st) < 0){
++-    close(fd);
++-    return;
++-  }
++-
++-  if(st.type == T_FILE){
++-    if(strcmp(fmtname(path), target) == 0)
++-      printf("%s\n", path);
++-    close(fd);
++-    return;
++-  }
++-
++-  if(st.type != T_DIR){
++-    close(fd);
++-    return;
++-  }
++-
++-  // 目录：枚举其子项。
++-  char buf[512];
++-  struct dirent de;
++-  char *p;
++-  int n = strlen(path);
++-  if(n + 1 + DIRSIZ + 1 > sizeof(buf)){
++-    close(fd);
++-    return;
++-  }
++-  strcpy(buf, path);
++-  p = buf + n;
++-  if(n == 0 || buf[n-1] != '/') *p++ = '/';
++-
++-  while(read(fd, &de, sizeof(de)) == sizeof(de)){
++-    if(de.inum == 0) continue;
++-    if(strcmp(de.name, ".") == 0 || strcmp(de.name, "..") == 0) continue;
++-
++-    memmove(p, de.name, DIRSIZ); // 拷贝名字（含可能的 0 填充）
++-    p[DIRSIZ] = 0;               // 保证结尾 0
++-
++-    // 去除填充后形成真实路径（memmove 已包含 0，fmtname 内部处理）
++-    // 判断是否名称匹配（文件或目录都打印）
++-    if(strcmp(fmtname(buf), target) == 0)
++-      printf("%s\n", buf);
++-
++-    // 如果是目录则递归
++-    int cfd = open(buf, 0);
++-    if(cfd >= 0){
++-      struct stat cst;
++-      if(fstat(cfd, &cst) == 0 && cst.type == T_DIR){
++-        close(cfd);
++-        find(buf, target);
++-      } else {
++-        close(cfd);
++-      }
++-    }
++-  }
++-  close(fd);
++-}
++-
++-int main(int argc, char *argv[]) {
++-  if(argc != 3){
++-    fprintf(2, "Usage: find <path> <name>\n");
++-    exit(1);
++-  }
++-  find(argv[1], argv[2]);
++-  exit(0);
++-}
++diff --git a/user/pingpong.c b/user/pingpong.c
++deleted file mode 100644
++index 9b53257..0000000
++--- a/user/pingpong.c
+++++ /dev/null
++@@ -1,74 +0,0 @@
++-#include "kernel/types.h"
++-#include "kernel/stat.h"
++-#include "user/user.h"
++-
++-// pingpong 实现：
++-// 父进程 -> 子进程 发送父进程 pid (int)
++-// 子进程 打印 "<child>: received ping from pid <parent>"
++-// 子进程 -> 父进程 回传子进程 pid (int)
++-// 父进程 打印 "<parent>: received pong from pid <child>"
++-// 不使用 wait()，仅依赖管道阻塞。
++-
++-static int read_full(int fd, void *buf, int n) {
++-  int tot = 0; char *p = (char*)buf; int r;
++-  while (tot < n && (r = read(fd, p + tot, n - tot)) > 0) tot += r;
++-  return tot == n ? 0 : -1;
++-}
++-static int write_full(int fd, const void *buf, int n) {
++-  int tot = 0; const char *p = (const char*)buf; int r;
++-  while (tot < n && (r = write(fd, (void*)(p + tot), n - tot)) > 0) tot += r;
++-  return tot == n ? 0 : -1;
++-}
++-
++-int
++-main(int argc, char *argv[])
++-{
++-  int p2c[2]; // parent -> child
++-  int c2p[2]; // child  -> parent
++-  if(pipe(p2c) < 0 || pipe(c2p) < 0){
++-    fprintf(2, "pipe failed\n");
++-    exit(1);
++-  }
++-
++-  int parent_pid = getpid();
++-  int child = fork();
++-  if(child < 0){
++-    fprintf(2, "fork failed\n");
++-    exit(1);
++-  }
++-
++-  if(child == 0){
++-    // 子进程：读取父 pid，然后回复自己的 pid
++-    close(p2c[1]);
++-    close(c2p[0]);
++-
++-    int father_pid;
++-    if(read_full(p2c[0], &father_pid, sizeof(father_pid)) < 0){
++-      exit(1);
++-    }
++-    printf("%d: received ping from pid %d\n", getpid(), father_pid);
++-
++-    int self = getpid();
++-    write_full(c2p[1], &self, sizeof(self));
++-
++-    close(p2c[0]);
++-    close(c2p[1]);
++-    exit(0);
++-  } else {
++-    // 父进程：发送自己的 pid，再等待子进程 pid 回来
++-    close(p2c[0]);
++-    close(c2p[1]);
++-
++-    write_full(p2c[1], &parent_pid, sizeof(parent_pid));
++-
++-    int child_pid;
++-    if(read_full(c2p[0], &child_pid, sizeof(child_pid)) < 0){
++-      exit(1);
++-    }
++-    printf("%d: received pong from pid %d\n", parent_pid, child_pid);
++-
++-    close(p2c[1]);
++-    close(c2p[0]);
++-    exit(0);
++-  }
++-}
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 3323e7b..5ae843e 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -69,6 +69,7 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++uint64          kalloc_freemem_bytes(void);
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -120,6 +121,7 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++uint64          proc_unused_count(void);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index dbb0305..7edc944 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -68,3 +68,14 @@ void *kalloc(void) {
+   if (r) memset((char *)r, 5, PGSIZE);  // fill with junk
+   return (void *)r;
+ }
++
++// Return current free memory in bytes.
++uint64 kalloc_freemem_bytes(void) {
++  uint64 bytes = 0;
++  acquire(&kmem.lock);
++  for (struct run *r = kmem.freelist; r != 0; r = r->next) {
++    bytes += PGSIZE;
++  }
++  release(&kmem.lock);
++  return bytes;
++}
+diff --git a/kernel/proc.c b/kernel/proc.c
+index f0c85fd..803cce3 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -117,6 +117,9 @@ found:
+   p->context.ra = (uint64)forkret;
+   p->context.sp = p->kstack + PGSIZE;
+ 
++  // default: no tracing
++  p->mask = 0;
++
+   return p;
+ }
+ 
+@@ -258,6 +261,9 @@ int fork(void) {
+ 
+   safestrcpy(np->name, p->name, sizeof(p->name));
+ 
++  // inherit trace mask
++  np->mask = p->mask;
++
+   pid = np->pid;
+ 
+   np->state = RUNNABLE;
+@@ -619,3 +625,14 @@ void procdump(void) {
+     printf("\n");
+   }
+ }
++
++// Count how many procs are UNUSED (free slots in proc table)
++uint64 proc_unused_count(void) {
++  uint64 n = 0;
++  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
++    acquire(&p->lock);
++    if (p->state == UNUSED) n++;
++    release(&p->lock);
++  }
++  return n;
++}
+diff --git a/kernel/proc.h b/kernel/proc.h
+index 70f9a65..5e2c627 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -109,4 +109,5 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  int mask;                    // trace mask: which syscalls to trace
+ };
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index dd6b28d..11da0d0 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -89,6 +89,8 @@ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
+ extern uint64 sys_rename(void);
++extern uint64 sys_trace(void);
++extern uint64 sys_sysinfo(void);
+ 
+ static uint64 (*syscalls[])(void) = {
+     [SYS_fork] = sys_fork,   [SYS_exit] = sys_exit,     [SYS_wait] = sys_wait,     [SYS_pipe] = sys_pipe,
+@@ -96,7 +98,18 @@ static uint64 (*syscalls[])(void) = {
+     [SYS_chdir] = sys_chdir, [SYS_dup] = sys_dup,       [SYS_getpid] = sys_getpid, [SYS_sbrk] = sys_sbrk,
+     [SYS_sleep] = sys_sleep, [SYS_uptime] = sys_uptime, [SYS_open] = sys_open,     [SYS_write] = sys_write,
+     [SYS_mknod] = sys_mknod, [SYS_unlink] = sys_unlink, [SYS_link] = sys_link,     [SYS_mkdir] = sys_mkdir,
+-    [SYS_close] = sys_close,
++  [SYS_close] = sys_close,
++  [SYS_trace] = sys_trace,
++  [SYS_sysinfo] = sys_sysinfo,
++};
++
++static const char *sysname[] = {
++  [SYS_fork] = "fork",     [SYS_exit] = "exit",     [SYS_wait] = "wait",     [SYS_pipe] = "pipe",
++  [SYS_read] = "read",     [SYS_kill] = "kill",     [SYS_exec] = "exec",     [SYS_fstat] = "fstat",
++  [SYS_chdir] = "chdir",   [SYS_dup] = "dup",       [SYS_getpid] = "getpid", [SYS_sbrk] = "sbrk",
++  [SYS_sleep] = "sleep",   [SYS_uptime] = "uptime", [SYS_open] = "open",     [SYS_write] = "write",
++  [SYS_mknod] = "mknod",   [SYS_unlink] = "unlink", [SYS_link] = "link",     [SYS_mkdir] = "mkdir",
++  [SYS_close] = "close",   [SYS_rename] = "rename", [SYS_trace] = "trace", [SYS_sysinfo] = "sysinfo",
+ };
+ 
+ void syscall(void) {
+@@ -105,7 +118,14 @@ void syscall(void) {
+ 
+   num = p->trapframe->a7;
+   if (num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+-    p->trapframe->a0 = syscalls[num]();
++    // capture arg0 for printing before syscall modifies registers
++    int a0 = (int)argraw(0);
++    uint64 ret = syscalls[num]();
++    p->trapframe->a0 = ret;
++    if (p->mask & (1 << num)) {
++      const char *name = (num < NELEM(sysname) && sysname[num]) ? sysname[num] : "unknown";
++      printf("%d: sys_%s(%d) -> %d\n", p->pid, name, a0, (int)ret);
++    }
+   } else {
+     printf("%d %s: unknown sys call %d\n", p->pid, p->name, num);
+     p->trapframe->a0 = -1;
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 653d8de..78d5a50 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -23,3 +23,7 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_rename 22
++// new syscall for lab: trace
++#define SYS_trace  23
++// new syscall for lab: sysinfo
++#define SYS_sysinfo 24
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index a69071e..9fad204 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -6,6 +6,7 @@
+ #include "memlayout.h"
+ #include "spinlock.h"
+ #include "proc.h"
++#include "sysinfo.h"
+ 
+ uint64 sys_exit(void) {
+   int n;
+@@ -81,3 +82,26 @@ uint64 sys_rename(void) {
+   p->name[len] = '\0';
+   return 0;
+ }
++
++// set syscall trace mask for current process
++uint64 sys_trace(void) {
++  int mask;
++  if (argint(0, &mask) < 0) return -1;
++  myproc()->mask = mask;
++  return 0;
++}
++
++// helper declarations
++extern uint64 kalloc_freemem_bytes(void);
++extern uint64 proc_unused_count(void);
++
++// fill a sysinfo struct in user space
++uint64 sys_sysinfo(void) {
++  uint64 uaddr; // user pointer to struct sysinfo
++  if (argaddr(0, &uaddr) < 0) return -1;
++  struct sysinfo info;
++  info.freemem = kalloc_freemem_bytes();
++  info.nproc = proc_unused_count();
++  if (copyout(myproc()->pagetable, uaddr, (char *)&info, sizeof(info)) < 0) return -1;
++  return 0;
++}
+diff --git a/user/trace.c b/user/trace.c
+index ab9701b..2670df6 100644
+--- a/user/trace.c
++++ b/user/trace.c
+@@ -20,6 +20,7 @@ int main(int argc, char *argv[]) {
+   for (i = 2; i < argc && i < MAXARG; i++) {
+     nargv[i - 2] = argv[i];
+   }
++  nargv[i - 2] = 0;
+   exec(nargv[0], nargv);
+   exit(0);
+ }
+diff --git a/user/user.h b/user/user.h
+index 199c96f..ad11641 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -28,6 +28,9 @@ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
+ int rename(const char*);
++int trace(int);
++struct sysinfo;
++int sysinfo(struct sysinfo*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 3a2f6c4..903e8ad 100644
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -37,3 +37,5 @@ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
+ entry("rename");
++entry("trace");
++entry("sysinfo");
