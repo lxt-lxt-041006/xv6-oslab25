@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64 sys_exit(void) {
   int n;
@@ -79,5 +80,28 @@ uint64 sys_rename(void) {
   struct proc *p = myproc();
   memmove(p->name, name, len);
   p->name[len] = '\0';
+  return 0;
+}
+
+// set syscall trace mask for current process
+uint64 sys_trace(void) {
+  int mask;
+  if (argint(0, &mask) < 0) return -1;
+  myproc()->mask = mask;
+  return 0;
+}
+
+// helper declarations
+extern uint64 kalloc_freemem_bytes(void);
+extern uint64 proc_unused_count(void);
+
+// fill a sysinfo struct in user space
+uint64 sys_sysinfo(void) {
+  uint64 uaddr; // user pointer to struct sysinfo
+  if (argaddr(0, &uaddr) < 0) return -1;
+  struct sysinfo info;
+  info.freemem = kalloc_freemem_bytes();
+  info.nproc = proc_unused_count();
+  if (copyout(myproc()->pagetable, uaddr, (char *)&info, sizeof(info)) < 0) return -1;
   return 0;
 }

@@ -117,6 +117,9 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // default: no tracing
+  p->mask = 0;
+
   return p;
 }
 
@@ -257,6 +260,9 @@ int fork(void) {
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+
+  // inherit trace mask
+  np->mask = p->mask;
 
   pid = np->pid;
 
@@ -618,4 +624,15 @@ void procdump(void) {
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// Count how many procs are UNUSED (free slots in proc table)
+uint64 proc_unused_count(void) {
+  uint64 n = 0;
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == UNUSED) n++;
+    release(&p->lock);
+  }
+  return n;
 }

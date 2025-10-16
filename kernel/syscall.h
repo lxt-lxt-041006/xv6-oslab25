@@ -23,3 +23,7 @@
 #define SYS_mkdir  20
 #define SYS_close  21
 #define SYS_rename 22
+// new syscall for lab: trace
+#define SYS_trace  23
+// new syscall for lab: sysinfo
+#define SYS_sysinfo 24

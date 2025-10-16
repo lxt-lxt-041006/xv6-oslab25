@@ -20,6 +20,7 @@ int main(int argc, char *argv[]) {
   for (i = 2; i < argc && i < MAXARG; i++) {
     nargv[i - 2] = argv[i];
   }
+  nargv[i - 2] = 0;
   exec(nargv[0], nargv);
   exit(0);
 }
